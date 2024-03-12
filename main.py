@@ -146,7 +146,6 @@ def ft_parse_m3u8(m3u8, encoding_info, channel=chzzk_uuid):
 def record(output_path):
   global vfrag_m3u8, afrag_m3u8
   global live_info
-  # ffmpeg -i {vfrag_m3u8} -i {afrag_m3u8} -c copy {output_path}
   
   vfrag_input = ffmpeg.input(vfrag_m3u8)
   afrag_input = ffmpeg.input(afrag_m3u8)
@@ -157,7 +156,7 @@ def record(output_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-      prog='chzzk 실시간 생방송 녹화기',
+      prog='python main.py',
       description='원하는 치지직 스트리머의 생방송 영상을 자동으로 녹화하고 저장합니다.',
       epilog='mady by @d2n0s4ur'
     )

@@ -5,7 +5,9 @@ import requests
 import time
 import json
 import ffmpeg
+import os
 
+################ REGEX ################
 chzzk_url_regex = r'^https:\/\/chzzk.naver.com\/live\/[a-z0-9]*$'
 chzzk_uuid_regex = r'[a-z0-9]*$'
 
@@ -31,9 +33,9 @@ live_playback_json = {}
 hls_encoding_path = ''
 llhls_encoding_path = ''
 encoding_data = []
-vfrag_m3u8 = ''
-afrag_m3u8 = ''
+fragment_m3u8 = ''
 
+# Convert time string to uptime (seconds)
 def get_uptime(start_date):
   start_date = time.strptime(start_date, '%Y-%m-%d %H:%M:%S')
   start_date = time.mktime(start_date)
@@ -41,7 +43,7 @@ def get_uptime(start_date):
   uptime = current_date - start_date
   return uptime
 
-def ft_is_live(channel):
+def get_live_info(channel):
   global live_playback_json
   url = f'https://api.chzzk.naver.com/service/v2/channels/{channel}/live-detail'
   
@@ -108,14 +110,6 @@ def print_hls_list(live_playback_json):
           'audioProfile': track['audioProfile'],
         })
       print()
-    # if media['mediaId'] == 'LLHLS' and media['protocol'] == 'HLS' and media['path'] != '':
-    #   llhls_encoding_path = media['path']
-    #   print('LLHLS Encoding(녹화시에는 권장하지 않습니다.)')
-    #   for i, track in enumerate(media['encodingTrack']):
-    #     if track['encodingTrackId'] == 'alow.stream':
-    #       continue
-    #     print('({0}) {1: >5} {2: >6}K {3}fps {4}x{5}'.format(i + 1, track['encodingTrackId'], int(track['videoBitRate'] / 1000), track['videoFrameRate'], track['videoWidth'], track['videoHeight']))
-    #   print()
 
 def ft_parse_m3u8(m3u8, encoding_info, channel=chzzk_uuid):
   print('request m3u8...')
@@ -123,35 +117,92 @@ def ft_parse_m3u8(m3u8, encoding_info, channel=chzzk_uuid):
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
     'Referer': f'https://chzzk.naver.com/live/{channel}'
   }
-  response = requests.get(m3u8)
+  response = requests.get(m3u8, headers=request_headers)
   
   m3u8_content = response.text
   m3u8_content = m3u8_content.split('\n')
   m3u8_content = list(filter(lambda x: x != '', m3u8_content))
-  afrag_content = list(filter(lambda x: x[0:12] == '#EXT-X-MEDIA', m3u8_content))
   m3u8_content = list(filter(lambda x: x[0] != '#', m3u8_content))
-  
-  afrag_m3u8 =  hls_encoding_path.split('hls_playlist')[0] + list(filter(lambda x: x[0:3] == 'URI', afrag_content[0].split(',')))[0].split('"')[1]
   for line in m3u8_content:
     if line.find(encoding_info['encodingTrackId']) != -1:
-      vfrag_m3u8 = hls_encoding_path.split('hls_playlist')[0] + line
+      fragment_m3u8 = hls_encoding_path.split('hls_playlist')[0] + line
 
-  if vfrag_m3u8 != '' and afrag_m3u8 != '':
-    print('get vfrag, afrag success')
-  else:
-    print('get vfrag, afrag failed')
+  if fragment_m3u8 == '' :
+    print('get m3u8 failed')
     exit(1)
-  return vfrag_m3u8, afrag_m3u8
+  print('get m3u8 success')
+  return fragment_m3u8
 
-def record(output_path):
-  global vfrag_m3u8, afrag_m3u8
+def record_with_ffmpeg(output_path):
+  global fragment_m3u8
   global live_info
   
-  vfrag_input = ffmpeg.input(vfrag_m3u8)
-  afrag_input = ffmpeg.input(afrag_m3u8)
-  output_file = f'{output_path}/[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.mkv'
-  output = ffmpeg.output(vfrag_input, afrag_input, output_file, vcodec='copy', acodec='copy')
-  output.run()
+  vfrag_input = ffmpeg.input(fragment_m3u8)
+  output_file = f'{output_path}/[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.ts'
+  output = ffmpeg.output(vfrag_input, output_file, vcodec='copy', acodec='copy')
+  
+  # run ffmpeg command in other process
+  ffmpeg.run(output, quiet=True, capture_stdout=True, capture_stderr=True)
+  
+
+def record(output_path):
+  global fragment_m3u8
+  global chzzk_uuid
+  global live_info
+  output_tmp_dir = f'{output_path}/tmp/{live_info["liveId"]} - {live_info["channelName"]}'
+  stored_fragment = []
+  fail_count = 0
+  # output_file = f'[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.ts'
+  # create tmp directory
+  try:
+    os.mkdir(f'{output_tmp_dir}')
+  except FileExistsError:
+    pass
+  
+  print('recording start...')
+  response = requests.get(fragment_m3u8, timeout=10)
+  m3u8_content = response.text
+  m3u8_content = m3u8_content.split('\n')
+  m3u8_content = list(filter(lambda x: x != '', m3u8_content))
+  for line in m3u8_content:
+    if line.find('#EXT-X-MAP:URI') != -1:
+      m4s_url = fragment_m3u8.split('hls_chunklist')[0] + line.split('URI="')[1].split('"')[0]
+      m4s_res = requests.get(m4s_url, timeout=5)
+      with open(f'{output_tmp_dir}/1080p_0_0_0.m4s', 'wb') as f:
+        f.write(m4s_res.content)
+      break
+  
+  while fail_count < 15:
+    response = requests.get(fragment_m3u8, timeout=10)
+    m3u8_content = response.text
+    m3u8_content = m3u8_content.split('\n')
+    m3u8_content = list(filter(lambda x: x != '', m3u8_content))
+    fragments = list(filter(lambda x: x[0] != '#', m3u8_content))
+    for fragment in fragments:
+      if fragment not in stored_fragment:
+        stored_fragment.append(fragment)
+        fragment_url = fragment_m3u8.split('hls_chunklist')[0] + fragment
+        # print(fragment_url)
+        headers = {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
+          'Referer': f'https://chzzk.naver.com/live/{chzzk_uuid}'
+        }
+        fragment_data = requests.get(fragment_url, timeout=5, headers=headers)
+        
+        if fragment_data.status_code != 200:
+          fail_count += 1
+          print(f'Failed to get fragment data. Fail count: {fail_count}')
+          continue
+        fail_count = 0
+        # append fragment data to file
+        with open(f'{output_tmp_dir}/{fragment.split("/")[-1].split("?")[0]}', 'wb') as f:
+          f.write(fragment_data.content)
+      if len(stored_fragment) > 15:
+        stored_fragment.pop(0)
+    
+    # sleep
+    time.sleep(2)
+
   
 
 if __name__ == "__main__":
@@ -163,7 +214,7 @@ if __name__ == "__main__":
     
     parser.add_argument('-l', '--link', type=str, help='스트리머의 생방송 주소를 입력하세요.', required=False)
     parser.add_argument('-u', '--uuid', type=str, help='스트리머의 uuid를 입력하세요.', required=False)
-    parser.add_argument('-o', '--output', type=str, help='녹화된 영상을 저장할 경로를 입력하세요.', required=True)
+    parser.add_argument('-o', '--output', type=str, help='녹화된 영상을 저장할 경로를 입력하세요.', required=False)
     args = parser.parse_args()
     
     # check args
@@ -182,7 +233,7 @@ if __name__ == "__main__":
             exit(1)
         chzzk_uuid = re.findall(chzzk_uuid_regex, args.link)[0]
 
-    if not ft_is_live(chzzk_uuid):
+    if not get_live_info(chzzk_uuid):
         print('생방송 중인 채널이 아닙니다. 인자를 다시 확인하세요.')
         exit(1)
     
@@ -199,5 +250,20 @@ if __name__ == "__main__":
     
     # start recording
     print(f'녹화를 시작합니다. 선택한 화질: {encoding_data[selected_encoding - 1]["encodingTrackId"]}')
-    vfrag_m3u8, afrag_m3u8 = ft_parse_m3u8(hls_encoding_path, encoding_data[selected_encoding - 1])
-    record(args.output)
+    fragment_m3u8 = ft_parse_m3u8(hls_encoding_path, encoding_data[selected_encoding - 1])
+    print(fragment_m3u8)
+    record(args.output if args.output else '.')
+    
+    print('녹화가 완료되었습니다.')
+    print('다운받은 영상을 mp4로 변환하시겠습니까? (y/n): ', end='')
+    convert = input()
+    
+    if convert == 'y':
+      print('변환 중...')
+      input_file = f'{args.output}/[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.ts'
+      output_file = f'{args.output}/[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.mp4'
+      ffmpeg.input(input_file).output(output_file).run(quiet=True, capture_stdout=True, capture_stderr=True)
+      print('변환 완료')
+    else:
+      print('프로그램을 종료합니다.')
+      exit(0)

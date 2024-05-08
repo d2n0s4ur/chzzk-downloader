@@ -142,6 +142,7 @@ def record_with_ffmpeg(output_path):
   output = ffmpeg.output(vfrag_input, output_file, vcodec='copy', acodec='copy')
   
   # run ffmpeg command in other process
+  print ('recording start...')
   ffmpeg.run(output, quiet=True, capture_stdout=True, capture_stderr=True)
   
 
@@ -152,7 +153,6 @@ def record(output_path):
   output_tmp_dir = f'{output_path}/tmp/{live_info["liveId"]} - {live_info["channelName"]}'
   stored_fragment = []
   fail_count = 0
-  # output_file = f'[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.ts'
   # create tmp directory
   try:
     os.mkdir(f'{output_tmp_dir}')
@@ -170,6 +170,8 @@ def record(output_path):
       m4s_res = requests.get(m4s_url, timeout=5)
       with open(f'{output_tmp_dir}/1080p_0_0_0.m4s', 'wb') as f:
         f.write(m4s_res.content)
+      with open(f'{output_tmp_dir}/output.mp4', 'wb') as output:
+        output.write(m4s_res.content)
       break
   
   while fail_count < 15:
@@ -194,9 +196,13 @@ def record(output_path):
           print(f'Failed to get fragment data. Fail count: {fail_count}')
           continue
         fail_count = 0
+        # fail_count+=1
         # append fragment data to file
-        with open(f'{output_tmp_dir}/{fragment.split("/")[-1].split("?")[0]}', 'wb') as f:
+        fragment_name = fragment.split("/")[-1].split("?")[0]
+        fragment_name = fragment_name.split(".")[0].split("_")[-1] + ".m4v"
+        with open(f'{output_tmp_dir}/{fragment_name}', 'wb') as f:
           f.write(fragment_data.content)
+        
       if len(stored_fragment) > 15:
         stored_fragment.pop(0)
     
@@ -252,18 +258,9 @@ if __name__ == "__main__":
     print(f'녹화를 시작합니다. 선택한 화질: {encoding_data[selected_encoding - 1]["encodingTrackId"]}')
     fragment_m3u8 = ft_parse_m3u8(hls_encoding_path, encoding_data[selected_encoding - 1])
     print(fragment_m3u8)
-    record(args.output if args.output else '.')
+    # record(args.output if args.output else '.')
+    record_with_ffmpeg(args.output if args.output else '.')
     
     print('녹화가 완료되었습니다.')
-    print('다운받은 영상을 mp4로 변환하시겠습니까? (y/n): ', end='')
-    convert = input()
+
     
-    if convert == 'y':
-      print('변환 중...')
-      input_file = f'{args.output}/[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.ts'
-      output_file = f'{args.output}/[{live_info["openDate"]}] {live_info["channelName"]} - {live_info["liveTitle"]}.mp4'
-      ffmpeg.input(input_file).output(output_file).run(quiet=True, capture_stdout=True, capture_stderr=True)
-      print('변환 완료')
-    else:
-      print('프로그램을 종료합니다.')
-      exit(0)
